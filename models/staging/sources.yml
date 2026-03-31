@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: raw_weather
+    project: no-ssg-gcp-miden-isnd
+    dataset: raw_weather
+    tables:
+      - name: daily_weather
