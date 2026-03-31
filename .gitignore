@@ -5,3 +5,4 @@ terraform.tfstate.backup
 terraform.tfvars
 .DS_Store
 Thumbs.db
+function.zip

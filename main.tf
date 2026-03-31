@@ -74,3 +74,99 @@ resource "google_project_iam_member" "storage_object_admin" {
   role    = "roles/storage.objectAdmin"
   member  = "serviceAccount:${google_service_account.weather_pipeline.email}"
 }
+
+# ── Cloud Function ───────────────────────────────────────────────────────────
+
+# enable required APIs
+resource "google_project_service" "cloudfunctions" {
+  service            = "cloudfunctions.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "cloudbuild" {
+  service            = "cloudbuild.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "run" {
+  service            = "run.googleapis.com"
+  disable_on_destroy = false
+}
+
+# zip the function code
+data "archive_file" "function_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/function"
+  output_path = "${path.module}/function.zip"
+}
+
+# upload zip to GCS
+resource "google_storage_bucket_object" "function_zip" {
+  name   = "function/ingest_weather_${data.archive_file.function_zip.output_md5}.zip"
+  bucket = google_storage_bucket.raw_weather.name
+  source = data.archive_file.function_zip.output_path
+
+  depends_on = [data.archive_file.function_zip]
+}
+
+# deploy the cloud function
+resource "google_cloudfunctions_function" "ingest_weather" {
+  name        = "ingest-weather"
+  description = "Fetches daily weather data for Norwegian cities and loads to GCS"
+  runtime     = "python311"
+  region      = var.function_region
+
+  available_memory_mb   = 256
+  source_archive_bucket = google_storage_bucket.raw_weather.name
+  source_archive_object = google_storage_bucket_object.function_zip.name
+  trigger_http          = true
+  entry_point           = "ingest_weather"
+  timeout               = 120
+
+  environment_variables = {
+    BUCKET_NAME = var.bucket_name
+  }
+
+  service_account_email = google_service_account.weather_pipeline.email
+
+  depends_on = [
+    google_project_service.cloudfunctions,
+    google_project_service.cloudbuild,
+    google_project_service.run
+  ]
+}
+
+# allow the function to be invoked
+resource "google_cloudfunctions_function_iam_member" "invoker" {
+  project        = var.project_id
+  region         = var.function_region
+  cloud_function = google_cloudfunctions_function.ingest_weather.name
+  role           = "roles/cloudfunctions.invoker"
+  member         = "serviceAccount:${google_service_account.weather_pipeline.email}"
+}
+
+# ── Cloud Scheduler ──────────────────────────────────────────────────────────
+
+resource "google_project_service" "scheduler" {
+  service            = "cloudscheduler.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_cloud_scheduler_job" "daily_weather" {
+  name        = "daily-weather-ingest"
+  description = "Triggers weather ingestion function every day at 6am UTC"
+  schedule    = "0 6 * * *"
+  time_zone   = "UTC"
+  region      = var.function_region
+
+  http_target {
+    http_method = "POST"
+    uri         = google_cloudfunctions_function.ingest_weather.https_trigger_url
+
+    oidc_token {
+      service_account_email = google_service_account.weather_pipeline.email
+    }
+  }
+
+  depends_on = [google_project_service.scheduler]
+}

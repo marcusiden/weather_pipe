@@ -25,3 +25,9 @@ variable "cities" {
     "Amsterdam"
   ]
 }
+
+variable "function_region" {
+  description = "GCP region for Cloud Functions (must be a supported region)"
+  type        = string
+  default     = "europe-west1"
+}
